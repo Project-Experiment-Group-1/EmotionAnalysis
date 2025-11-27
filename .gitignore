@@ -131,7 +131,7 @@ dmypy.json
 # 1
 data/Morphset_features_fullfeatures=False.npy
 data/AFEW-VA/
-data/images
+#data/images
 data/**/*.csv
 data/**/*.npy
 models/model_emotion_pls=30_fullfeatures=False.joblib
