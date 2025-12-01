@@ -10,23 +10,30 @@ analyses your face in real-time. DLIB landmarks are not very illumination
 invariant, so this works better when there are no shadows on the face.
 """
 
-
 import numpy as np
 import cv2
 import dlib
+import matplotlib
+
+# [FIX] 强制使用非交互式后端 'Agg'。
+# 这必须在导入 pyplot 之前或初始化时完成，防止 Matplotlib 抢占 GUI 事件循环。
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from emotions_dlib import EmotionsDlib, plot_landmarks
+from kalman_utils import LandmarksStabilizer, dlib_to_numpy  # 导入我们新建的卡尔曼工具
 import math
+
 
 class FrameAnalyzer:
     """analyze face of every frame"""
+
     def __init__(self,
-                 smoothing_factor = 0.5,
-                 deadzone_threshold = 0.05,
-                 calibration_frames = 60, #frames used for calibration
-                 prefictor_path = f'../models/shape_predictor_68_face_landmarks.dat',
-                 file_emotion_model = f'../models/model_emotion_fromMorphset_pls=31_fullfeatures=False.joblib',
-                 file_frontalization_model = f'../models/model_frontalization.npy'):
+                 smoothing_factor=0.8,
+                 deadzone_threshold=0.05,
+                 calibration_frames=60,  # frames used for calibration
+                 prefictor_path=f'../models/shape_predictor_68_face_landmarks.dat',
+                 file_emotion_model=f'../models/model_emotion_fromMorphset_pls=31_fullfeatures=False.joblib',
+                 file_frontalization_model=f'../models/model_frontalization.npy'):
         self.smoothing_factor = smoothing_factor
         self.deadzone_threshold = deadzone_threshold
 
@@ -36,9 +43,13 @@ class FrameAnalyzer:
 
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor(prefictor_path)
-        self.emotion_estimator = EmotionsDlib(file_emotion_model=file_emotion_model, file_frontalization_model=file_frontalization_model)
+        self.emotion_estimator = EmotionsDlib(file_emotion_model=file_emotion_model,
+                                              file_frontalization_model=file_frontalization_model)
 
-        self.s_prev_vals = {'valence' : 0, 'arousal' : 0, 'intensity' : 0,}
+        # initialize Kalman filter
+        self.stabilizer = LandmarksStabilizer(num_landmarks=68, Q=0.001, R=5.0)
+
+        self.s_prev_vals = {'valence': 0, 'arousal': 0, 'intensity': 0, }
         self.baseline = {'valence': 0.0, 'arousal': 0.0, 'intensity': 0.0}
 
     def process_frame(self, frame):
@@ -50,16 +61,20 @@ class FrameAnalyzer:
 
         face = self._get_largest_face(faces)
 
-        #estimate emotion and get emotion info
+        # get original landmarks and apply Kalman filter
         landmarks_object = self.predictor(image, face)
-        dict_emotions = self.emotion_estimator.get_emotions(landmarks_object)
+        landmarks_raw_np = dlib_to_numpy(landmarks_object)
+        landmarks_smoothed_np = self.stabilizer.update(landmarks_raw_np)
 
-        raw_results = {'landmarks' : dict_emotions['landmarks']['raw'],
-                       'landmarks_frontal' : dict_emotions['landmarks']['frontal'],
-                       'arousal' : dict_emotions['emotions']['arousal'],
-                       'valence' : dict_emotions['emotions']['valence'],
-                       'intensity' : dict_emotions['emotions']['intensity'],
-                       'name' : dict_emotions['emotions']['name'],
+        # estimate filtered landmarks
+        dict_emotions = self.emotion_estimator.get_emotions(landmarks_smoothed_np)
+
+        raw_results = {'landmarks': dict_emotions['landmarks']['raw'],
+                       'landmarks_frontal': dict_emotions['landmarks']['frontal'],
+                       'arousal': dict_emotions['emotions']['arousal'],
+                       'valence': dict_emotions['emotions']['valence'],
+                       'intensity': dict_emotions['emotions']['intensity'],
+                       'name': dict_emotions['emotions']['name'],
                        'face_rect': face}
 
         s_results = self._apply_smoothing(raw_results)
@@ -127,7 +142,7 @@ class FrameAnalyzer:
         self.baseline['arousal'] = avg_a
         self.baseline['intensity'] = avg_i
 
-        self.s_prev_vals = {'valence' : 0, 'arousal' : 0, 'intensity' : 0,}
+        self.s_prev_vals = {'valence': 0, 'arousal': 0, 'intensity': 0, }
         self._calibration_buffer = []
         self._is_calibrating = False
         print(f"Calibration Complete. New Baseline -> V:{avg_v:.2f}, A:{avg_a:.2f}")
@@ -135,10 +150,20 @@ class FrameAnalyzer:
     def _apply_correction(self, s_results):
         """apply calibration and deadzone"""
         v_corrected = s_results['valence'] - self.baseline['valence']
+        if v_corrected > 1.0:
+            v_corrected = 1.0
+        elif v_corrected < -1.0:
+            v_corrected = -1.0
+
         if abs(v_corrected) < self.deadzone_threshold:
             v_corrected = 0.0
 
         a_corrected = s_results['arousal'] - self.baseline['arousal']
+        if a_corrected > 1.0:
+            a_corrected = 1.0
+        elif a_corrected < -1.0:
+            a_corrected = -1.0
+
         if abs(a_corrected) < self.deadzone_threshold:
             a_corrected = 0.0
 
@@ -152,7 +177,6 @@ class FrameAnalyzer:
         s_results['arousal'] = a_corrected
         s_results['intensity'] = i_corrected
         s_results['name'] = name
-
 
         return s_results
 
@@ -275,54 +299,56 @@ class FrameAnalyzer:
 
         return expression_intensity + " " + expression_name
 
+
 class Visualizer:
-    def __init__(self, graph_length = 30):
+    def __init__(self, show_cam=True, show_graph=True, graph_length=30):
+        self.show_cam = show_cam
+        self.show_graph = show_graph
         self.graph_length = graph_length
 
-        #initialize graph visualizations
-        plt.ion()
+        # [FIX] 移除 plt.ion()，不再使用 Matplotlib 的交互模式
+        # plt.ion()
         plt.style.use('seaborn')
 
         self.fig = plt.figure(figsize=(15, 10))
         self.grid = plt.GridSpec(5, 6)
-        plt.suptitle('(Press "C" to Calibrate | Press Q to quit)')
+        # 移除 Matplotlib 标题中的按键提示，因为现在窗口分离了，逻辑略有不同
+        plt.suptitle('Emotion Analysis Graphs')
 
         self._init_plots()
 
-        #initialize value list for waveform
+        # initialize value list for waveform
         self.ls_arousal = []
         self.ls_valence = []
         self.ls_intensity = []
 
-        #objects for graph
+        # objects for graph
         self.points_av = None
         self.points_series = {}
         self.polys_series = {}
 
-        #set camera feed name
+        # set camera feed name
         self.window_name = "Camera Feed"
 
-        # 新增：用于存储 Matplotlib 窗口捕获的按键
-        self.mpl_key_buffer = None
-        # 新增：绑定键盘事件到 Matplotlib 窗口
-        self.fig.canvas.mpl_connect('key_press_event', self._on_mpl_key_press)
+        # [FIX] 新增：用于存储图表图像的变量
+        self.graph_image = None
 
-    def _on_mpl_key_press(self, event):
-        if event.key is not None:
-            self.mpl_key_buffer = event.key.lower()
+        # [FIX] 移除 Matplotlib 的键盘事件监听，全部交由 OpenCV 处理
+        # self.mpl_key_buffer = None
+        # self.fig.canvas.mpl_connect('key_press_event', self._on_mpl_key_press)
 
     def _init_plots(self):
         """initialize subplots and axes"""
 
-        #subplot1: original landmarks
+        # subplot1: original landmarks
         self.ax_orig = plt.subplot(self.grid[:2, :2])
         self.ax_orig.set_title('Original landmarks')
 
-        #subplot2: frontalized landmarks
+        # subplot2: frontalized landmarks
         self.ax_front = plt.subplot(self.grid[:2, 2:4])
         self.ax_front.set_title('Frontalized landmarks')
 
-        #subplot3: AV space
+        # subplot3: AV space
         self.ax_av = plt.subplot(self.grid[:2, 4:])
         self.ax_av.set_title('Arousal Valence Space')
         self.ax_av.set_xlim((-1, 1))
@@ -335,7 +361,7 @@ class Visualizer:
         deadzone_rect = plt.Rectangle((-0.15, -0.15), 0.3, 0.3, fill=False, edgecolor='gray', linestyle='--')
         self.ax_av.add_patch(deadzone_rect)
 
-        #subplots4, 5, 6: waveform
+        # subplots4, 5, 6: waveform
         self.axes_series = {}
         labels = ['Valence', 'Arousal', 'Intensity']
         rows = [2, 3, 4]
@@ -343,7 +369,7 @@ class Visualizer:
         self.colors = {'Valence': (0.8, 0.2, 0.2), 'Arousal': (0.2, 0.2, 0.8), 'Intensity': (0.2, 0.8, 0.2)}
 
         for idx, label in zip(rows, labels):
-            #take evry col of row idx for each waveform
+            # take evry col of row idx for each waveform
             ax = plt.subplot(self.grid[idx, :])
             ax.set_ylabel(label)
 
@@ -380,44 +406,65 @@ class Visualizer:
             self.ls_arousal.pop(0)
             self.ls_intensity.pop(0)
 
-        #create x-axis list and y-axis basis list(0 list)
+        if not self.show_graph:
+            return
+
+        # create x-axis list and y-axis basis list(0 list)
         ls_xs = list(range(len(self.ls_valence)))
         ls_0z = [0] * len(self.ls_valence)
 
-        #update AV space
+        # update AV space
         self.ax_orig.clear()
         plot_landmarks(landmarks, axis=self.ax_orig, title='Original landmarks')
 
         self.ax_front.clear()
         plot_landmarks(landmarks_frontal, axis=self.ax_front, title='Frontalized landmarks')
 
-        #update points
+        # update points
         if self.points_av is not None:
             self.points_av.remove()
         self.points_av, = self.ax_av.plot(valence, arousal, color='r', marker='.', markersize=20)
         self.ax_av.set_title(f'AR={arousal:.2f} | VA={valence:.2f} | IN={intensity:.2f}\n{name}')
 
-        #update waveform
+        # update waveform
         data_map = {'Valence': self.ls_valence, 'Arousal': self.ls_arousal, 'Intensity': self.ls_intensity}
 
         for label, data_list in data_map.items():
             ax = self.axes_series[label]
             color = self.colors[label]
 
-            #clean lines
+            # clean lines
             if label in self.points_series and self.points_series[label] is not None:
                 self.points_series[label].remove()
-            #clean poly color
+            # clean poly color
             if label in self.polys_series and self.polys_series[label] is not None:
                 self.polys_series[label].remove()
 
-            #draw new lines
+            # draw new lines
             self.points_series[label], = ax.plot(data_list, linewidth=1, color=color)
 
-            #fill new poly color
-            self.polys_series[label] = ax.fill_between(ls_xs, data_list, ls_0z, interpolate=True, alpha=0.3, color=color)
+            # fill new poly color
+            self.polys_series[label] = ax.fill_between(ls_xs, data_list, ls_0z, interpolate=True, alpha=0.3,
+                                                       color=color)
 
-        plt.pause(0.01)
+        # [FIX] 核心修复：不使用 plt.pause() 或 flush_events()
+        # 而是将 Matplotlib 的画布渲染成内存中的一张图片，然后交给 OpenCV 显示
+        self.fig.canvas.draw()
+
+        # 从 canvas 获取图像数据 (RGB)
+        try:
+            # 这种方法兼容性最好
+            img_w, img_h = self.fig.canvas.get_width_height()
+            # 注意：tostring_rgb 较老，但为了兼容性通常保留。如果报错可尝试 buffer_rgba
+            buf = self.fig.canvas.tostring_rgb()
+            img_vis = np.frombuffer(buf, dtype=np.uint8)
+            img_vis = img_vis.reshape((img_h, img_w, 3))
+
+            # 转换为 BGR (OpenCV 格式)
+            self.graph_image = cv2.cvtColor(img_vis, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            print(f"Error converting plot to image: {e}")
+            self.graph_image = None
 
     def show_camera_feed(self, frame, result_data, calibration_progress=None):
         if calibration_progress is not None and calibration_progress > 0:
@@ -442,26 +489,25 @@ class Visualizer:
         cv2.putText(frame, "Press 'Q' to Quit", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         cv2.putText(frame, "Press 'C' to Calibrate", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
 
-        cv2.imshow(self.window_name, frame)
+        # 窗口1：摄像头画面
+        if self.show_cam:
+            cv2.imshow(self.window_name, frame)
 
-        # 1. 获取 OpenCV 窗口按键
+        # [FIX] 窗口2：数据图表 (使用 OpenCV 显示，而不是 Matplotlib 窗口)
+        if self.graph_image is not None:
+            cv2.imshow("Analysis Graphs", self.graph_image)
+
+        # 统一的按键检测 (OpenCV)
         cv_key = -1
         k = cv2.waitKey(1) & 0xFF
-        if k != 255:  # 255 通常表示没有按键
+        if k != 255:  # 255: no key
             cv_key = k
 
-        # 2. 检查 Matplotlib 窗口是否有缓存的按键
         final_action = None
-
-        # 逻辑：检查 'q'
-        if cv_key == ord('q') or self.mpl_key_buffer == 'q':
+        if cv_key == ord('q'):
             final_action = 'quit'
-        # 逻辑：检查 'c'
-        elif cv_key == ord('c') or self.mpl_key_buffer == 'c':
+        elif cv_key == ord('c'):
             final_action = 'calibrate'
-
-        # 清除 Matplotlib 按键缓存，防止重复触发
-        self.mpl_key_buffer = None
 
         return final_action
 
@@ -469,8 +515,10 @@ class Visualizer:
         plt.close('all')
         cv2.destroyAllWindows()
 
+
 class RealtimeEmotionAnalysis:
     """output result on Console"""
+
     def print_results(self, result_data):
         if result_data is None:
             return
@@ -487,21 +535,27 @@ class RealtimeEmotionAnalysis:
             f'Emotion: {name}'
         )
 
-def run_demo():
+
+def run_demo(show_cam=True, show_graph=True):
     try:
         analyzer = FrameAnalyzer(deadzone_threshold=0.05, calibration_frames=60)
-        visualizer = Visualizer()
+        # [MODIFIED] 将参数传递给 Visualizer
+        visualizer = Visualizer(show_cam=show_cam, show_graph=show_graph)
         logger = RealtimeEmotionAnalysis()
     except Exception as e:
         print(f"Initialization Error: {e}")
         return
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print("Cannot open camera")
         return
 
     print("Starting... Press 'C' to calibrate your face.")
+
+    UPDATE_INTERVAL = 5  # update frequency (frame)
+    frame_counter = 0
+    last_result = None
 
     try:
         while True:
@@ -509,16 +563,27 @@ def run_demo():
             if not ret:
                 break
 
-            result = analyzer.process_frame(frame)
+            frame_counter += 1
 
+            # [NOTE] 保持了您之前的逻辑：校准时不跳帧
+            if analyzer.is_calibrating() or (frame_counter % UPDATE_INTERVAL == 0):
+                # face detect and emotion estimate
+                last_result = analyzer.process_frame(frame)
+
+                is_calibrating = analyzer.is_calibrating()
+
+                # update chart when not calibrating
+                if not is_calibrating:
+                    visualizer.update_charts(last_result)
+
+                # console
+                logger.print_results(last_result)
+
+            # update camera feed
             is_calibrating = analyzer.is_calibrating()
             calibration_progress = analyzer.get_calibration_progress() if is_calibrating else None
 
-            if not is_calibrating:
-                visualizer.update_charts(result)
-
-            action = visualizer.show_camera_feed(frame, result, calibration_progress)
-            logger.print_results(result)
+            action = visualizer.show_camera_feed(frame, last_result, calibration_progress)
 
             if action == 'quit':
                 break
@@ -532,8 +597,6 @@ def run_demo():
         visualizer.close()
         print("Resources released.")
 
+
 if __name__ == '__main__':
     run_demo()
-
-
-
