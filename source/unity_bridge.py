@@ -2,6 +2,7 @@ import socket
 import json
 import time
 import sys
+import traceback
 
 try:
     import emotion_core as core
@@ -27,43 +28,60 @@ def main():
         s.bind((HOST, PORT))
         s.listen()
 
-        conn, addr = s.accept()
-        with conn:
-            print(f"Unity connected:{addr}")
+        print(f"listening on port:{PORT}")
+        while True:
+            print(f"\nWating for Unity Connection ({HOST}:{PORT}) ...")
 
             try:
-                while True:
-                    start_time = time.time()
+                conn, addr = s.accept()
 
-                    # Get Data
-                    data = core.get_current_emotion()
+                with conn:
+                    print(f"Unity connected:{addr}")
 
-                    # Send Data
-                    if data:
-                        # resize as json
-                        json_str = json.dumps(data) + "\n"
-                        conn.sendall(json_str.encode('utf-8'))
-                        
-                        # print log(for debug)
-                        if data.get("hasFace"):
-                            print(f"send: {data['label']} (V:{data['valence']:.2f})")
-                        else:
-                            print("No face") 
-                            pass
-                    
-                    # frame control
-                    elapsed = time.time() - start_time
-                    sleep_time = (1.0 / FRAME_RATE) - elapsed
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
+                    try:
+                        while True:
+                            start_time = time.time()
 
-            except (ConnectionResetError, BrokenPipeError):
-                print("Unity Disconnected")
+                            # Get Data
+                            data = core.get_current_emotion()
+
+                            # Send Data
+                            if data:
+                                # resize as json
+                                json_str = json.dumps(data) + "\n"
+                                conn.sendall(json_str.encode('utf-8'))
+                                
+                                # print log(for debug)
+                                if data.get("hasFace"):
+                                    print(f"send: {data['label']} (V:{data['valence']:.2f})")
+                                else:
+                                    print("No face") 
+                                    pass
+                            
+                            # frame control
+                            elapsed = time.time() - start_time
+                            sleep_time = (1.0 / FRAME_RATE) - elapsed
+                            if sleep_time > 0:
+                                time.sleep(sleep_time)
+
+                    except (ConnectionResetError, BrokenPipeError):
+                        print("Unity Disconnected")
+                    except Exception as e:
+                        print(f"Error: {e}")
+                    finally:
+                        print("Closing...")
+                        core.release_system()
+            except KeyboardInterrupt:
+                print("\nSystem stoped (Ctrl+C)")
+                break
             except Exception as e:
-                print(f"Error: {e}")
-            finally:
-                print("Closing...")
-                core.release_system()
+                print(f"\nError: {e}")
+                traceback.print_exc()
+                # 防止死循环刷屏，报错后暂停一下
+                time.sleep(1)
+
+    print("Releasing resources...")
+    core.release_system()
 
 if __name__ == "__main__":
     main()  
