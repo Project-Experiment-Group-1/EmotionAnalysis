@@ -2,13 +2,32 @@
 
 import time
 import random
+import cv2
+import numpy as py
+from RealtimeEmotionAnalysis import FrameAnalyzer
+from source.emotions_dlib import EmotionsDlib
+
+global_cap = None
+global_analyzer = None
 
 #Loading model and Opening camera
 #Return: True / False
 def init_system():
-    print("[analog] Loading model")
-    print("[analog] Opening the camera")
-    return True
+    global global_cap, global_analyzer
+
+    try:
+        print("[analog] Loading model")
+        global_analyzer = FrameAnalyzer(deadzone_threshold=0.05, calibration_frames=60)
+
+        print("[analog] Opening the camera")
+        global_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+
+        if not global_cap.isOpened():
+            return False
+        return True
+
+    except Exception as e:
+        return False
 
 # reading fram and analize
 # Return: Dictionary
@@ -22,15 +41,47 @@ def init_system():
 # if face are not detected 
 # Return: {"hasFace": False}
 def get_current_emotion():
-    # fake data for test
+    global global_cap, global_analyzer
+
+    no_face_result = {"hasFaces": False}
+
+    ret, frame = global_cap.read()
+    if not ret:
+        return no_face_result
+
+    try:
+        result_data = global_analyzer.process_frame(frame)
+    except Exception as e:
+        return no_face_result
+
+    if result_data is None:
+        return no_face_result
+
     return {
         "hasFace": True,
-        "valence": round(random.uniform(-1, 1), 2),
-        "arousal": round(random.uniform(-1, 1), 2),
-        "intensity": round(random.uniform(0, 1), 2),
-        "label": random.choice(["Happy", "Sad", "Neutral", "Angry"])
+        "valence": round(result_data['valence'], 2),
+        "arousal": round(result_data['arousal'], 2),
+        "intensity": round(result_data['intensity'], 2),
+        "label": result_data['name']
     }
 
 # Release camera and other resource
 def release_system():
+    global global_cap
     print("[analog] realse resource")
+    if global_cap is not None:
+        global_cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    import time
+    if init_system():
+        try:
+            for i in range(20): # 测试读取10次
+                data = get_current_emotion()
+                print(f"Test {i}: {data}")
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            release_system()

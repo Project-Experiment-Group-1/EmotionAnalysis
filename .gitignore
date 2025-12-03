@@ -139,4 +139,5 @@ data/**/*.npy
 models/model_emotion_pls=30_fullfeatures=False.joblib
 models/model_emotion_fromAFEW-VAset_pls=30_fullfeatures=False.joblib
 models/model_emotion_fromMorphset_pls=29_fullfeatures=False.joblib
+.idea/
 
