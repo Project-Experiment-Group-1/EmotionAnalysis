@@ -24,6 +24,15 @@ def init_system():
 
         if not global_cap.isOpened():
             return False
+        print("Starting calibration...")
+        print("=== PLEASE KEEP A NEUTRAL FACE ===")
+        global_analyzer.start_calibration()
+        while global_analyzer.is_calibrating():
+            ret, frame = global_cap.read()
+            if not ret:
+                return False
+            global_analyzer.process_frame(frame)
+            time.sleep(0.01)
         return True
 
     except Exception as e:
@@ -74,10 +83,9 @@ def release_system():
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    import time
     if init_system():
         try:
-            for i in range(20): # 测试读取10次
+            for i in range(20): # 测试读取20次
                 data = get_current_emotion()
                 print(f"Test {i}: {data}")
                 time.sleep(0.1)
