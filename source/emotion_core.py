@@ -1,11 +1,8 @@
 # FOR test
 
 import time
-import random
 import cv2
-import numpy as py
 from RealtimeEmotionAnalysis import FrameAnalyzer
-from source.emotions_dlib import EmotionsDlib
 
 global_cap = None
 global_analyzer = None
