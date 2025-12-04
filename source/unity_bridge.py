@@ -18,6 +18,7 @@ def main():
     print("init system")
     if not core.init_system():
         print("Error: Fail to initial system")
+        input("Press Enter to exit...")
         return
     print("system ready")
 
@@ -29,6 +30,7 @@ def main():
         s.listen()
 
         print(f"listening on port:{PORT}")
+
         while True:
             print(f"\nWating for Unity Connection ({HOST}:{PORT}) ...")
 
@@ -69,15 +71,14 @@ def main():
                     except Exception as e:
                         print(f"Error: {e}")
                     finally:
-                        print("Closing...")
-                        core.release_system()
+                        print("\nConnection closed. Waiting for next...")
+
             except KeyboardInterrupt:
                 print("\nSystem stoped (Ctrl+C)")
                 break
             except Exception as e:
                 print(f"\nError: {e}")
                 traceback.print_exc()
-                # 防止死循环刷屏，报错后暂停一下
                 time.sleep(1)
 
     print("Releasing resources...")
